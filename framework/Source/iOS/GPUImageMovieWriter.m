@@ -260,10 +260,22 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 {
     alreadyFinishedRecording = NO;
     startTime = kCMTimeInvalid;
-        if (audioInputReadyCallback == NULL)
-        {
-            [assetWriter startWriting];
+    if (audioInputReadyCallback == NULL)
+    {
+        BOOL hasStarted = [assetWriter startWriting];
+        if (!hasStarted) {
+            if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+            {
+                NSError *error = assetWriter.error;
+                if (!error) {
+                    error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on startRecording"}];
+                }
+                [self.delegate movieRecordingFailedWithError:error];
+                [self cancelRecording];
+                return;
+            }
         }
+    }
     isRecording = YES;
     [assetWriter startSessionAtSourceTime:kCMTimeZero];
 }
@@ -366,7 +378,20 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 
                 if ((audioInputReadyCallback == NULL) && (assetWriter.status != AVAssetWriterStatusWriting))
                 {
-                    [assetWriter startWriting];
+                    BOOL hasStarted = [assetWriter startWriting];
+                    if (!hasStarted) {
+                        if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+                        {
+                            NSError *error = assetWriter.error;
+                            if (!error) {
+                                error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on processAudioBuffer"}];
+                            }
+                            [self.delegate movieRecordingFailedWithError:error];
+                            [self cancelRecording];
+                            return;
+                        }
+                    }
+
                 }
                 [assetWriter startSessionAtSourceTime:currentSampleTime];
                 startTime = currentSampleTime;
@@ -473,7 +498,19 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
     {
         if( assetWriter.status != AVAssetWriterStatusWriting )
         {
-            [assetWriter startWriting];
+            BOOL hasStarted = [assetWriter startWriting];
+            if (!hasStarted) {
+                if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+                {
+                    NSError *error = assetWriter.error;
+                    if (!error) {
+                        error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on enableSynchronizationCallbacks"}];
+                    }
+                    [self.delegate movieRecordingFailedWithError:error];
+                    [self cancelRecording];
+                    return;
+                }
+            }
         }
         videoQueue = dispatch_queue_create("com.sunsetlakesoftware.GPUImage.videoReadingQueue", GPUImageDefaultQueueAttribute());
         [assetWriterVideoInput requestMediaDataWhenReadyOnQueue:videoQueue usingBlock:^{
