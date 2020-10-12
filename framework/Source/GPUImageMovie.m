@@ -186,6 +186,11 @@
             AVKeyValueStatus tracksStatus = [inputAsset statusOfValueForKey:@"tracks" error:&error];
             if (tracksStatus != AVKeyValueStatusLoaded)
             {
+                if (tracksStatus == AVKeyValueStatusFailed) {
+                    if (self.delegate && [self.delegate respondsToSelector:@selector(didFailedPlayingMovieWithError:)]) {
+                        [self.delegate didFailedPlayingMovieWithError:error];
+                    }
+                }
                 return;
             }
             blockSelf.asset = inputAsset;
@@ -199,7 +204,13 @@
 {
     NSError *error = nil;
     AVAssetReader *assetReader = [AVAssetReader assetReaderWithAsset:self.asset error:&error];
-
+    if (error != nil) {
+        if (self.delegate && [self.delegate respondsToSelector:@selector(didFailedPlayingMovieWithError:)]) {
+            [self.delegate didFailedPlayingMovieWithError:error];
+            return nil;
+        }
+    }
+    
     NSMutableDictionary *outputSettings = [NSMutableDictionary dictionary];
     if ([GPUImageContext supportsFastTextureUpload]) {
         [outputSettings setObject:@(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) forKey:(id)kCVPixelBufferPixelFormatTypeKey];

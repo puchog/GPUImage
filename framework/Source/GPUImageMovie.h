@@ -7,7 +7,9 @@
  */
 @protocol GPUImageMovieDelegate <NSObject>
 
+@optional
 - (void)didCompletePlayingMovie;
+- (void)didFailedPlayingMovieWithError:(NSError*)error;
 @end
 
 /** Source object for filtering movies

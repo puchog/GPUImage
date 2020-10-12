@@ -40,7 +40,7 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 // Movie recording
 - (void)initializeMovieWithOutputSettings:(NSMutableDictionary *)outputSettings;
 
-- (void)renderAtInternalSizeUsingFramebuffer:(GPUImageFramebuffer *)inputFramebufferToUse;
+//- (void)renderAtInternalSizeUsingFramebuffer:(GPUImageFramebuffer *)inputFramebufferToUse;
 
 @end
 
@@ -64,23 +64,29 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 
 - (id)initWithMovieURL:(NSURL *)newMovieURL size:(CGSize)newSize;
 {
-    return [self initWithMovieURL:newMovieURL size:newSize fileType:AVFileTypeQuickTimeMovie outputSettings:nil];
+    return [self initWithMovieURL:newMovieURL size:newSize fileType:AVFileTypeQuickTimeMovie outputSettings:nil delegate:nil];
 }
 
 - (id)initWithMovieURL:(NSURL *)newMovieURL size:(CGSize)newSize fileType:(NSString *)newFileType outputSettings:(NSMutableDictionary *)outputSettings;
 {
+    return [self initWithMovieURL:newMovieURL size:newSize fileType:newFileType outputSettings:outputSettings delegate:nil];
+}
+
+
+- (id)initWithMovieURL:(NSURL *)newMovieURL size:(CGSize)newSize fileType:(NSString *)newFileType outputSettings:(NSMutableDictionary *)outputSettings delegate:(id<GPUImageMovieWriterDelegate>) delegate {
     if (!(self = [super init]))
     {
-		return nil;
+        return nil;
     }
-
+    
     _shouldInvalidateAudioSampleWhenDone = NO;
     
+    self.delegate = delegate;
     self.enabled = YES;
     alreadyFinishedRecording = NO;
     videoEncodingIsFinished = NO;
     audioEncodingIsFinished = NO;
-
+    
     discont = NO;
     videoSize = newSize;
     movieURL = newMovieURL;
@@ -91,43 +97,44 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
     previousAudioTime = kCMTimeNegativeInfinity;
     inputRotation = kGPUImageNoRotation;
     
-      if ([GPUImageContext supportsFastTextureUpload])
+    if ([GPUImageContext supportsFastTextureUpload])
+    {
+        colorSwizzlingProgram = [[GPUImageContext sharedImageProcessingContext] programForVertexShaderString:kGPUImageVertexShaderString fragmentShaderString:kGPUImagePassthroughFragmentShaderString];
+    }
+    else
+    {
+        colorSwizzlingProgram = [[GPUImageContext sharedImageProcessingContext] programForVertexShaderString:kGPUImageVertexShaderString fragmentShaderString:kGPUImageColorSwizzlingFragmentShaderString];
+    }
+    
+    if (!colorSwizzlingProgram.initialized)
+    {
+        [colorSwizzlingProgram addAttribute:@"position"];
+        [colorSwizzlingProgram addAttribute:@"inputTextureCoordinate"];
+        
+        if (![colorSwizzlingProgram link])
         {
-            colorSwizzlingProgram = [[GPUImageContext sharedImageProcessingContext] programForVertexShaderString:kGPUImageVertexShaderString fragmentShaderString:kGPUImagePassthroughFragmentShaderString];
+            NSString *progLog = [colorSwizzlingProgram programLog];
+            NSLog(@"Program link log: %@", progLog);
+            NSString *fragLog = [colorSwizzlingProgram fragmentShaderLog];
+            NSLog(@"Fragment shader compile log: %@", fragLog);
+            NSString *vertLog = [colorSwizzlingProgram vertexShaderLog];
+            NSLog(@"Vertex shader compile log: %@", vertLog);
+            colorSwizzlingProgram = nil;
+            NSAssert(NO, @"Filter shader link failed");
         }
-        else
-        {
-            colorSwizzlingProgram = [[GPUImageContext sharedImageProcessingContext] programForVertexShaderString:kGPUImageVertexShaderString fragmentShaderString:kGPUImageColorSwizzlingFragmentShaderString];
-        }
-        
-        if (!colorSwizzlingProgram.initialized)
-        {
-            [colorSwizzlingProgram addAttribute:@"position"];
-            [colorSwizzlingProgram addAttribute:@"inputTextureCoordinate"];
-            
-            if (![colorSwizzlingProgram link])
-            {
-                NSString *progLog = [colorSwizzlingProgram programLog];
-                NSLog(@"Program link log: %@", progLog);
-                NSString *fragLog = [colorSwizzlingProgram fragmentShaderLog];
-                NSLog(@"Fragment shader compile log: %@", fragLog);
-                NSString *vertLog = [colorSwizzlingProgram vertexShaderLog];
-                NSLog(@"Vertex shader compile log: %@", vertLog);
-                colorSwizzlingProgram = nil;
-                NSAssert(NO, @"Filter shader link failed");
-            }
-        }        
-        
-        colorSwizzlingPositionAttribute = [colorSwizzlingProgram attributeIndex:@"position"];
-        colorSwizzlingTextureCoordinateAttribute = [colorSwizzlingProgram attributeIndex:@"inputTextureCoordinate"];
-        colorSwizzlingInputTextureUniform = [colorSwizzlingProgram uniformIndex:@"inputImageTexture"];
-        
-        glEnableVertexAttribArray(colorSwizzlingPositionAttribute);
-        glEnableVertexAttribArray(colorSwizzlingTextureCoordinateAttribute);
+    }
+    
+    colorSwizzlingPositionAttribute = [colorSwizzlingProgram attributeIndex:@"position"];
+    colorSwizzlingTextureCoordinateAttribute = [colorSwizzlingProgram attributeIndex:@"inputTextureCoordinate"];
+    colorSwizzlingInputTextureUniform = [colorSwizzlingProgram uniformIndex:@"inputImageTexture"];
+    
+    glEnableVertexAttribArray(colorSwizzlingPositionAttribute);
+    glEnableVertexAttribArray(colorSwizzlingTextureCoordinateAttribute);
     [self initializeMovieWithOutputSettings:outputSettings];
-
+    
     return self;
 }
+
 
 - (void)dealloc;
 {
@@ -253,10 +260,22 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 {
     alreadyFinishedRecording = NO;
     startTime = kCMTimeInvalid;
-        if (audioInputReadyCallback == NULL)
-        {
-            [assetWriter startWriting];
+    if (audioInputReadyCallback == NULL)
+    {
+        BOOL hasStarted = [assetWriter startWriting];
+        if (!hasStarted) {
+            if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+            {
+                NSError *error = assetWriter.error;
+                if (!error) {
+                    error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on startRecording"}];
+                }
+                [self.delegate movieRecordingFailedWithError:error];
+                [self cancelRecording];
+                return;
+            }
         }
+    }
     isRecording = YES;
     [assetWriter startSessionAtSourceTime:kCMTimeZero];
 }
@@ -359,7 +378,20 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
 
                 if ((audioInputReadyCallback == NULL) && (assetWriter.status != AVAssetWriterStatusWriting))
                 {
-                    [assetWriter startWriting];
+                    BOOL hasStarted = [assetWriter startWriting];
+                    if (!hasStarted) {
+                        if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+                        {
+                            NSError *error = assetWriter.error;
+                            if (!error) {
+                                error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on processAudioBuffer"}];
+                            }
+                            [self.delegate movieRecordingFailedWithError:error];
+                            [self cancelRecording];
+                            return;
+                        }
+                    }
+
                 }
                 [assetWriter startSessionAtSourceTime:currentSampleTime];
                 startTime = currentSampleTime;
@@ -466,7 +498,19 @@ NSString *const kGPUImageColorSwizzlingFragmentShaderString = SHADER_STRING
     {
         if( assetWriter.status != AVAssetWriterStatusWriting )
         {
-            [assetWriter startWriting];
+            BOOL hasStarted = [assetWriter startWriting];
+            if (!hasStarted) {
+                if(self.delegate && [self.delegate respondsToSelector:@selector(movieRecordingFailedWithError:)])
+                {
+                    NSError *error = assetWriter.error;
+                    if (!error) {
+                        error = [NSError errorWithDomain:@"com.acolorstory" code:400 userInfo:@{@"Error reason": @"Unexpected failure on enableSynchronizationCallbacks"}];
+                    }
+                    [self.delegate movieRecordingFailedWithError:error];
+                    [self cancelRecording];
+                    return;
+                }
+            }
         }
         videoQueue = dispatch_queue_create("com.sunsetlakesoftware.GPUImage.videoReadingQueue", GPUImageDefaultQueueAttribute());
         [assetWriterVideoInput requestMediaDataWhenReadyOnQueue:videoQueue usingBlock:^{
